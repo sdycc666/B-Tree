@@ -3,39 +3,64 @@
 
 int main(int argc, char const *argv[])
 {
-    BPtree bptree;
-    init(&bptree);
-
-    // 测试插入数据
-    int test_data[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20};
-    int n = sizeof(test_data) / sizeof(test_data[0]);
-    printf("插入数据：");
-    for (int i = 0; i < n; i++)
+    BPtree tree;
+    init(&tree);
+    int op;
+    while (1)
     {
-        printf("%d ", test_data[i]);
-        insert(&bptree, test_data[i]);
+        menu();
+        scanf("%d", &op);
+        switch (op)
+        {
+            case 1:
+            {
+                int val;
+                printf("请输入要插入的整数：");
+                scanf("%d", &val);
+                insert(&tree, val);
+                printf("插入完成\n\n");
+                break;
+            }
+            case 2:
+            {
+                int val;
+                printf("请输入要查找的整数：");
+                scanf("%d", &val);
+                int res = search(&tree, val);
+                if (res == 1)
+                    printf("查找成功：%d 存在于树中\n", val);
+                else
+                    printf("查找失败：%d 不存在\n", val);
+                printf("\n");
+                break;
+            }
+            case 3:
+            {
+                int l, r;
+                printf("请输入区间起点 start：");
+                scanf("%d", &l);
+                printf("请输入区间终点 end：");
+                scanf("%d", &r);
+                range_search(&tree, l, r);
+                printf("\n");
+                break;
+            }
+            case 4:
+                show(&tree);
+                printf("\n");
+                break;
+            case 5:
+                destroy(&tree);
+                printf("B+树已全部销毁，内存释放完毕\n\n");
+                break;
+            case 0:
+                // 退出前释放内存，防止内存泄漏
+                destroy(&tree);
+                printf("已释放资源，程序退出\n");
+                return 0;
+            default:
+                printf("输入序号无效，请重新选择！\n\n");
+                break;
+        }
     }
-    printf("\n");
-
-    // 遍历所有数据
-    show(&bptree);
-
-    // 测试单点查找
-    int search_key[] = {2, 7, 22};
-    for (int i = 0; i < 3; i++)
-    {
-        if (search(&bptree, search_key[i]))
-            printf("查找 %d：存在\n", search_key[i]);
-        else
-            printf("查找 %d：不存在\n", search_key[i]);
-    }
-
-    // 测试范围搜索
-    range_search(&bptree, 3, 7);
-    range_search(&bptree, 8, 15);
-    range_search(&bptree, 21, 30);
-
-    // 销毁树
-    destroy(&bptree);
-    return 0;
 }
