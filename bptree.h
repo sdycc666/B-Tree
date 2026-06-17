@@ -32,7 +32,6 @@ typedef struct BPtree
     int height;
 } BPtree;
 
-void menu();
 void init(BPtree *B);
 void insert(BPtree *B, int data);
 int search(BPtree *B, int data);

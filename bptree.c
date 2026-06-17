@@ -188,19 +188,6 @@ static void destroy_node(BPtree *B, void *node, int depth)
     free(node);
 }
 
-void menu()
-{
-    printf("==================== B+树操作菜单 ====================\n");
-    printf("1. 插入数据\n");
-    printf("2. 单点查找\n");
-    printf("3. 区间范围查找 [start, end]\n");
-    printf("4. 打印树中全部数据\n");
-    printf("5. 销毁整棵B+树\n");
-    printf("0. 退出程序\n");
-    printf("======================================================\n");
-    printf("请输入功能序号：");
-}
-
 
 void init(BPtree *B)
 {
