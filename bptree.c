@@ -28,6 +28,8 @@ static LNode *CreateLNode()
 // 升序插入数据到叶子节点
 static void insertlnode(LNode *leaf, int data)
 {
+     if (leaf->datanum >= MAX)
+        return;
     int i = leaf->datanum - 1;
     while (i >= 0 && leaf->data[i] >= data)
     {
