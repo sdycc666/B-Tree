@@ -1,5 +1,17 @@
 #include "bptree.h"
 #include <stdio.h>
+#include <stdbool.h>
+
+static void *safe_malloc(size_t size)
+{
+    void *p = malloc(size);
+    if(p==NULL)
+    {
+        perror("分配失败！");
+        exit(EXIT_FAILURE);
+    }
+    return p;
+}
 
 // 创建非叶子节点
 static NNode *CreateNNode()
