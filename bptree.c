@@ -16,7 +16,7 @@ static void *safe_malloc(size_t size)
 // 创建非叶子节点
 static NNode *CreateNNode()
 {
-    NNode *nnode = malloc(sizeof(NNode));
+    NNode *nnode = safe_malloc(sizeof(NNode));
     nnode->keynum = 0;
     for (int i = 0; i <= MAX - 1; i++)
         nnode->child[i] = NULL;
@@ -28,7 +28,7 @@ static NNode *CreateNNode()
 // 创建叶子节点
 static LNode *CreateLNode()
 {
-    LNode *lnode = malloc(sizeof(LNode));
+    LNode *lnode = safe_malloc(sizeof(LNode));
     lnode->datanum = 0;
     lnode->next = NULL;
     lnode->prev = NULL;
