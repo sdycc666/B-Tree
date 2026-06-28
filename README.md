@@ -148,7 +148,7 @@ static NNode *splitnnode(NNode *nnode, int *upkey)
     return newnode;
 }
 
-c```
+```
 
 ## 6. 难点
 - 所能存储的关键字数量不同导致叶子节点与非叶子节点的分裂差异
