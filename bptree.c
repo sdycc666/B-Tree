@@ -1,371 +1,380 @@
 #include "bptree.h"
 #include <stdio.h>
-#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 
-static void *safe_malloc(size_t size)
+
+
+// 获取文件头指针（文件头就在 mmap 基址偏移0处）
+static Header *get_header(BPTree *tree)
 {
-    void *p = malloc(size);
-    if(p==NULL)
-    {
-        perror("分配失败！");
-        exit(EXIT_FAILURE);
-    }
-    return p;
+    return (Header *)tree->base;
 }
 
-// 创建非叶子节点
-static NNode *CreateNNode()
+// 根据偏移量获取节点指针：base + offset 直接还原
+// 这就是 mmap 的核心优势——磁盘文件像内存一样直接访问
+static Node *get_node(BPTree *tree, off_t offset)
 {
-    NNode *nnode = safe_malloc(sizeof(NNode));
-    nnode->keynum = 0;
-    for (int i = 0; i <= MAX - 1; i++)
-        nnode->child[i] = NULL;
-    for (int i = 0; i < MAX - 1; i++)
-        nnode->key[i] = MY_INT_MAX;
-    return nnode;
+    return (Node *)((char *)tree->base + offset);
 }
 
-// 创建叶子节点
-static LNode *CreateLNode()
+// 分配一个新节点，返回它在文件中的偏移量
+// 类似 malloc，但分配的是文件空间而非内存
+static off_t alloc_node(BPTree *tree)
 {
-    LNode *lnode = safe_malloc(sizeof(LNode));
-    lnode->datanum = 0;
-    lnode->next = NULL;
-    lnode->prev = NULL;
-    for (int i = 0; i < MAX; i++)
-        lnode->data[i] = MY_INT_MAX;
-    return lnode;
+    Header *hdr = get_header(tree);
+    off_t offset = hdr->next_free;
+    hdr->next_free += sizeof(Node);
+
+    // 初始化节点（mmap 映射的内存可能有脏数据，必须清零）
+    Node *node = get_node(tree, offset);
+    memset(node, 0, sizeof(Node));
+    node->is_leaf = 1;  // 新建节点默认是叶子
+    node->count = 0;
+    return offset;
 }
 
-// 升序插入数据到叶子节点
-static void insertlnode(LNode *leaf, int data)
+// 节点内二分查找：返回第一个 key >= target 的下标
+// 用于叶子节点的插入定位和精确查找
+static int binary_search(Node *node, int target)
 {
-     if (leaf->datanum >= MAX)
-        return;
-    int i = leaf->datanum - 1;
-    while (i >= 0 && leaf->data[i] >= data)
-    {
-        leaf->data[i + 1] = leaf->data[i];
-        i--;
-    }
-    leaf->data[i + 1] = data;
-    leaf->datanum++;
-}
-
-// 分裂满的叶子节点
-static LNode *splitleaf(LNode *leaf, int *upkey)
-{
-    LNode *newnode = CreateLNode();
-    int mid = leaf->datanum / 2;
-
-    int j = 0;
-    for (int i = mid; i < leaf->datanum; i++)
-    {
-        newnode->data[j] = leaf->data[i];
-        newnode->datanum++;
-        leaf->data[i] = MY_INT_MAX;
-        j++;
-    }
-    leaf->datanum = mid;
-
-    *upkey = newnode->data[0];
-
-    // 维护双向链表
-    newnode->next = leaf->next;
-    newnode->prev = leaf;
-    if (leaf->next != NULL)
-    {
-        leaf->next->prev = newnode;
-    }
-    leaf->next = newnode;
-
-    return newnode;
-}
-
-// 升序插入索引和子节点到非叶子节点
-static void insertnnode(NNode *nnode, int key, void *rightchild)
-{
-    int i = nnode->keynum - 1;
-    while (i >= 0 && nnode->key[i] > key)
-    {
-        nnode->key[i + 1] = nnode->key[i];
-        nnode->child[i + 2] = nnode->child[i + 1];
-        i--;
-    }
-    nnode->key[i + 1] = key;
-    nnode->child[i + 2] = rightchild;
-    nnode->keynum++;
-}
-
-// 分裂满的非叶子节点
-static NNode *splitnnode(NNode *nnode, int *upkey)
-{
-    NNode *newnode = CreateNNode();
-    int mid = nnode->keynum / 2;
-    *upkey = nnode->key[mid];
-
-    int j = 0;
-    for (int i = mid + 1; i < nnode->keynum; i++)
-    {
-        newnode->key[j] = nnode->key[i];
-        newnode->keynum++;
-        nnode->key[i] = MY_INT_MAX;
-        j++;
-    }
-
-    j = 0;
-    for (int i = mid + 1; i <= nnode->keynum; i++)
-    {
-        newnode->child[j] = nnode->child[i];
-        j++;
-    }
-
-    nnode->keynum = mid;
-    return newnode;
-}
-
-// 递归插入
-static void insert_recursive(BPtree *B, void *node, int data, int depth)
-{
-    // 深度等于高度，到叶子节点
-    if (depth == B->height)
-    {
-        LNode *leaf = (LNode*)node;
-        // 检查重复
-        for (int i = 0; i < leaf->datanum; i++)
-        {
-            if (leaf->data[i] == data)
-                return;
-        }
-        insertlnode(leaf, data);
-        return;
-    }
-
-    // 非叶子节点
-    NNode *nnode = (NNode*)node;
-    // 找到子节点
-    int i = 0;
-    while (i < nnode->keynum && data >= nnode->key[i])
-        i++;
-    void *child = nnode->child[i];
-
-    // 检查子节点是否满了
-    int child_is_full = 0;
-    if (depth + 1 == B->height)
-    {
-        child_is_full = ((LNode*)child)->datanum == MAX;
-    }
-    else
-    {
-        child_is_full = ((NNode*)child)->keynum == MAX - 1;
-    }
-
-    // 子节点满了先分裂
-    int child_upkey = 0;
-    void *child_newnode = NULL;
-    if (child_is_full)
-    {
-        if (depth + 1 == B->height)
-        {
-            child_newnode = splitleaf((LNode*)child, &child_upkey);
-        }
+    int left = 0, right = node->count - 1;
+    while (left <= right) {
+        int mid = (left + right) / 2;
+        if (node->key[mid] < target)
+            left = mid + 1;
         else
-        {
-            child_newnode = splitnnode((NNode*)child, &child_upkey);
-        }
-        insertnnode(nnode, child_upkey, child_newnode);
-        // 重新决定插入的子节点
-        if (data > child_upkey)
-        {
-            i++;
-            child = child_newnode;
-        }
+            right = mid - 1;
     }
-
-    // 递归插入
-    insert_recursive(B, child, data, depth + 1);
-}
-
-// 销毁节点
-static void destroy_node(BPtree *B, void *node, int depth)
-{
-    if (node == NULL)
-        return;
-    if (depth < B->height)
-    {
-        NNode *nnode = (NNode*)node;
-        for (int i = 0; i <= nnode->keynum; i++)
-        {
-            destroy_node(B, nnode->child[i], depth + 1);
-        }
-    }
-    free(node);
+    return left;
 }
 
 
-void init(BPtree *B)
+static void split_child(BPTree *tree, off_t parent_off, int child_index)
 {
-    B->root = NULL;
-    B->leaf_head = NULL;
-    B->leaf_tail = NULL;
-    B->height = 0;
+    Node *parent = get_node(tree, parent_off);
+    off_t child_off = parent->child[child_index];
+    Node *child = get_node(tree, child_off);
+
+    // 分配新节点（分裂出的右半部分）
+    off_t new_off = alloc_node(tree);
+    Node *new_node = get_node(tree, new_off);
+    new_node->is_leaf = child->is_leaf;
+
+    int mid = child->count / 2;  // 分裂点
+
+    if (child->is_leaf) {
+        // ---------- 叶子节点分裂 ----------
+        // 后半部分 [mid, count) 移到新节点
+        int j = 0;
+        for (int i = mid; i < child->count; i++) {
+            new_node->key[j] = child->key[i];
+            j++;
+        }
+        new_node->count = child->count - mid;
+        child->count = mid;
+
+        // 维护叶子双向链表：child[0]=next，child[1]=prev，偏移量0表示NULL
+        new_node->child[0] = child->child[0];  // new->next = old->next
+        new_node->child[1] = child_off;          // new->prev = old
+        if (child->child[0] != 0) {
+            Node *next = get_node(tree, child->child[0]);
+            next->child[1] = new_off;            // next->prev = new
+        }
+        child->child[0] = new_off;                // old->next = new
+
+        // B+树叶子分裂：提升新节点的第一个 key 到父节点
+        int up_key = new_node->key[0];
+
+        // 把 up_key 和新节点指针插入父节点的 child_index 位置
+        for (int i = parent->count; i > child_index; i--) {
+            parent->key[i] = parent->key[i - 1];
+            parent->child[i + 1] = parent->child[i];
+        }
+        parent->key[child_index] = up_key;
+        parent->child[child_index + 1] = new_off;
+        parent->count++;
+    } else {
+        // ---------- 非叶子节点分裂 ----------
+        // mid 位置的 key 提升到父节点（不保留在任何子节点）
+        int up_key = child->key[mid];
+
+        // mid+1 之后的 key 移到新节点
+        int j = 0;
+        for (int i = mid + 1; i < child->count; i++) {
+            new_node->key[j] = child->key[i];
+            j++;
+        }
+        new_node->count = child->count - mid - 1;
+
+        // mid+1 之后的 child 指针移到新节点
+        j = 0;
+        for (int i = mid + 1; i <= child->count; i++) {
+            new_node->child[j] = child->child[i];
+            j++;
+        }
+
+        child->count = mid;
+
+        // 把 up_key 和新节点指针插入父节点
+        for (int i = parent->count; i > child_index; i--) {
+            parent->key[i] = parent->key[i - 1];
+            parent->child[i + 1] = parent->child[i];
+        }
+        parent->key[child_index] = up_key;
+        parent->child[child_index + 1] = new_off;
+        parent->count++;
+    }
 }
 
-void insert(BPtree *B, int data)
+static void insert_non_full(BPTree *tree, off_t node_off, int key)
 {
-    // 空树第一次插入
-    if (B->root == NULL)
-    {
-        LNode *leaf = CreateLNode();
-        insertlnode(leaf, data);
-        B->root = leaf;
-        B->leaf_head = leaf;
-        B->leaf_tail = leaf;
-        B->height = 1;
-        return;
-    }
+    Node *node = get_node(tree, node_off);
 
-    // 检查根是否满了
-    int root_is_full = 0;
-    if (B->height == 1)
-    {
-        root_is_full = ((LNode*)B->root)->datanum == MAX;
-    }
-    else
-    {
-        root_is_full = ((NNode*)B->root)->keynum == MAX - 1;
-    }
-
-    // 根满了分裂根
-    if (root_is_full)
-    {
-        int upkey;
-        void *newnode;
-        if (B->height == 1)
-        {
-            newnode = splitleaf((LNode*)B->root, &upkey);
-            if (((LNode*)newnode)->next == NULL)
-                B->leaf_tail = (LNode*)newnode;
-        }
-        else
-        {
-            newnode = splitnnode((NNode*)B->root, &upkey);
-        }
-        // 创建新根
-        NNode *new_root = CreateNNode();
-        new_root->key[0] = upkey;
-        new_root->child[0] = B->root;
-        new_root->child[1] = newnode;
-        new_root->keynum = 1;
-        B->root = new_root;
-        B->height++;
-    }
-
-    // 递归插入
-    insert_recursive(B, B->root, data, 1);
-}
-
-int search(BPtree *B, int data)
-{
-    if (B->root == NULL)
-        return 0;
-
-    void *node = B->root;
-    int depth = 1;
-    while (depth < B->height)
-    {
-        NNode *nnode = (NNode*)node;
+    if (node->is_leaf) {
+        // ---------- 叶子节点：直接插入 ----------
+        // 二分查找定位插入位置
+        int pos = binary_search(node, key);
+        // 重复值忽略
+        if (pos < node->count && node->key[pos] == key)
+            return;
+        // 元素后移，空出位置
+        for (int i = node->count; i > pos; i--)
+            node->key[i] = node->key[i - 1];
+        node->key[pos] = key;
+        node->count++;
+    } else {
+        // ---------- 非叶子节点：找到要走的子节点 ----------
+        // B+树非叶子的 key[i] 是分隔键：child[i+1] 子树中所有值 >= key[i]
+        // 所以找第一个 key[i] > target 的位置，走 child[i]
         int i = 0;
-        while (i < nnode->keynum && data >= nnode->key[i])
+        while (i < node->count && node->key[i] <= key)
             i++;
-        node = nnode->child[i];
-        depth++;
+        int pos = i;
+
+        off_t child_off = node->child[pos];
+        Node *child = get_node(tree, child_off);
+
+        // 子节点满了，先分裂（自顶向下分裂，保证递归下去子节点一定非满）
+        if (child->count == ORDER) {
+            split_child(tree, node_off, pos);
+            // 分裂后父节点多了一个 key，重新判断走左边还是右边
+            if (key > node->key[pos])
+                pos++;
+            child_off = node->child[pos];
+        }
+
+        // 递归插入到子节点
+        insert_non_full(tree, child_off, key);
+    }
+}
+
+
+int bptree_insert(BPTree *tree, int key)
+{
+    Header *hdr = get_header(tree);
+
+    // 空树：创建第一个叶子节点作为根
+    if (hdr->root == 0) {
+        off_t root_off = alloc_node(tree);
+        hdr->root = root_off;
+        hdr->height = 1;
+        Node *root = get_node(tree, root_off);
+        root->is_leaf = 1;
+        root->key[0] = key;
+        root->count = 1;
+        return 0;
     }
 
-    LNode *leaf = (LNode*)node;
-    for (int i = 0; i < leaf->datanum; i++)
-    {
-        if (leaf->data[i] == data)
-            return 1;
+    Node *root = get_node(tree, hdr->root);
+
+    // 根节点满了：创建新根，分裂旧根，树高+1
+    if (root->count == ORDER) {
+        off_t new_root_off = alloc_node(tree);
+        Node *new_root = get_node(tree, new_root_off);
+        new_root->is_leaf = 0;
+        new_root->count = 0;
+        new_root->child[0] = hdr->root;  // 新根的第一个孩子指向旧根
+        hdr->root = new_root_off;
+        hdr->height++;
+
+        split_child(tree, new_root_off, 0);       // 分裂旧根
+        insert_non_full(tree, new_root_off, key);  // 插入新值
+    } else {
+        insert_non_full(tree, hdr->root, key);
     }
+
     return 0;
 }
 
-void range_search(BPtree *B, int start, int end)
+
+int bptree_search(BPTree *tree, int key)
 {
-    if (B->root == NULL || start > end)
-    {
+    Header *hdr = get_header(tree);
+    if (hdr->root == 0)
+        return 0;
+
+    off_t node_off = hdr->root;
+    while (1) {
+        Node *node = get_node(tree, node_off);
+        if (node->is_leaf) {
+            // 到叶子了，二分查找精确匹配
+            int pos = binary_search(node, key);
+            return (pos < node->count && node->key[pos] == key);
+        }
+        // 非叶子：沿索引向下走
+        int i = 0;
+        while (i < node->count && node->key[i] <= key)
+            i++;
+        node_off = node->child[i];
+    }
+}
+
+
+void bptree_range_search(BPTree *tree, int start, int end)
+{
+    Header *hdr = get_header(tree);
+    if (hdr->root == 0 || start > end) {
         printf("范围搜索结果：空\n");
         return;
     }
 
-    // 定位起点
-    void *node = B->root;
-    int depth = 1;
-    while (depth < B->height)
-    {
-        NNode *nnode = (NNode*)node;
+    // 第一步：从根向下定位到 start 所在的叶子节点
+    off_t node_off = hdr->root;
+    while (1) {
+        Node *node = get_node(tree, node_off);
+        if (node->is_leaf)
+            break;
         int i = 0;
-        while (i < nnode->keynum && start >= nnode->key[i])
+        while (i < node->count && node->key[i] <= start)
             i++;
-        node = nnode->child[i];
-        depth++;
+        node_off = node->child[i];
     }
 
-    // 遍历叶子链表
-    LNode *leaf = (LNode*)node;
-    printf("范围搜索[%d, %d]的结果：", start, end);
+    // 第二步：沿叶子双向链表顺序扫描，遇到 > end 就提前终止
+    printf("范围搜索[%d, %d]：", start, end);
     int count = 0;
-    while (leaf != NULL)
-    {
-        for (int i = 0; i < leaf->datanum; i++)
-        {
-            int data = leaf->data[i];
-            if (data > end)
-            {
-                goto end_search;
-            }
-            if (data >= start)
-            {
-                printf("%d ", data);
+    while (node_off != 0) {
+        Node *node = get_node(tree, node_off);
+        for (int i = 0; i < node->count; i++) {
+            if (node->key[i] > end)
+                goto done;  // 超过上界，直接跳出所有循环
+            if (node->key[i] >= start) {
+                printf("%d ", node->key[i]);
                 count++;
             }
         }
-        leaf = leaf->next;
+        node_off = node->child[0];  // 走到下一个叶子（next）
     }
-end_search:
+done:
     if (count == 0)
-    {
         printf("无匹配数据");
-    }
     printf("\n");
 }
 
-void show(BPtree *B)
+
+void bptree_show(BPTree *tree)
 {
-    if (B->leaf_head == NULL)
-    {
+    Header *hdr = get_header(tree);
+    if (hdr->root == 0) {
         printf("空树\n");
         return;
     }
-    LNode *leaf = B->leaf_head;
+
+    // 找到最左边的叶子（一直走 child[0]）
+    off_t node_off = hdr->root;
+    while (1) {
+        Node *node = get_node(tree, node_off);
+        if (node->is_leaf)
+            break;
+        node_off = node->child[0];
+    }
+
+    // 沿链表顺序打印
     printf("B+树所有数据：");
-    while (leaf != NULL)
-    {
-        for (int i = 0; i < leaf->datanum; i++)
-        {
-            printf("%d ", leaf->data[i]);
-        }
-        leaf = leaf->next;
+    while (node_off != 0) {
+        Node *node = get_node(tree, node_off);
+        for (int i = 0; i < node->count; i++)
+            printf("%d ", node->key[i]);
+        node_off = node->child[0];
     }
     printf("\n");
 }
 
-void destroy(BPtree *B)
+
+BPTree *bptree_open(const char *path)
 {
-    destroy_node(B, B->root, 1);
-    B->root = NULL;
-    B->leaf_head = NULL;
-    B->leaf_tail = NULL;
-    B->height = 0;
+    BPTree *tree = malloc(sizeof(BPTree));
+    if (!tree) return NULL;
+
+    // 打开文件（不存在则创建）
+    int fd = open(path, O_RDWR | O_CREAT, 0644);
+    if (fd < 0) {
+        perror("open");
+        free(tree);
+        return NULL;
+    }
+
+    // 获取文件大小
+    struct stat st;
+    fstat(fd, &st);
+
+    // 新文件：预分配空间（ftruncate 扩展文件大小）
+    if (st.st_size == 0) {
+        if (ftruncate(fd, INIT_FILE_SIZE) < 0) {
+            perror("ftruncate");
+            close(fd);
+            free(tree);
+            return NULL;
+        }
+    }
+
+    size_t file_size = (st.st_size == 0) ? INIT_FILE_SIZE : st.st_size;
+
+
+    void *base = mmap(NULL, file_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (base == MAP_FAILED) {
+        perror("mmap");
+        close(fd);
+        free(tree);
+        return NULL;
+    }
+
+    tree->fd = fd;
+    tree->base = base;
+    tree->file_size = file_size;
+
+    // 初始化或校验文件头
+    Header *hdr = get_header(tree);
+    if (st.st_size == 0) {
+        // 新文件：写入文件头
+        hdr->magic = MAGIC;
+        hdr->page_size = PAGE_SIZE;
+        hdr->root = 0;
+        hdr->height = 0;
+        hdr->next_free = PAGE_SIZE;  // 第一页留给文件头，节点从第2页开始
+    } else if (hdr->magic != MAGIC) {
+        // 已有文件但魔数不对：不是我们的B+树文件
+        fprintf(stderr, "文件格式错误：魔数不匹配\n");
+        munmap(base, file_size);
+        close(fd);
+        free(tree);
+        return NULL;
+    }
+
+    return tree;
+}
+
+
+void bptree_close(BPTree *tree)
+{
+    if (!tree) return;
+    msync(tree->base, tree->file_size, MS_SYNC);  // 强制把脏页写回磁盘
+    munmap(tree->base, tree->file_size);            // 解除内存映射
+    close(tree->fd);                                  // 关闭文件
+    free(tree);                                       // 释放句柄
 }
